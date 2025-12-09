@@ -147,6 +147,14 @@ h3 {
   background: #229954;
 }
 
+#traffic-stats button#create-ai-prompt-btn {
+  background: #9b59b6;
+}
+
+#traffic-stats button#create-ai-prompt-btn:hover {
+  background: #8e44ad;
+}
+
 #loading {
   padding: 12px;
   text-align: center;

@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Settings - Web Traffic Monitor</title>
+  <style>
+    body { padding: 20px; font-family: Arial; max-width: 500px; }
+    input { width: 100%; padding: 10px; margin: 10px 0; }
+    button { padding: 10px 20px; margin: 5px; }
+    #status { margin: 10px 0; padding: 10px; }
+  </style>
+</head>
+<body>
+  <h2>Settings</h2>
+  
+  <h3>Gemini API Key</h3>
+  <p>Get your key from <a href="https://makersuite.google.com/app/apikey" target="_blank">Google AI Studio</a></p>
+  
+  <input type="password" id="apiKey" placeholder="Enter your Gemini API key">
+  
+  <div>
+    <button id="saveBtn">Save</button>
+    <button id="testBtn">Test Connection</button>
+  </div>
+  
+  <div id="status"></div>
+  
+  <script src="options.js"></script>
+</body>
+</html>
