@@ -2,16 +2,59 @@
 <html>
   <head>
     <meta charset="UTF-8" />
-    <title>CredGuard</title>
+    <title>Web Traffic Monitor</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
     <div id="container">
-      <h1>CredGuard</h1>
+      <h1>Web Traffic Monitor</h1>
+      
+      <!-- API Key Configuration -->
+      <div id="api-key-section">
+        <label for="api-key-input">OpenAI API Key:</label>
+        <input type="password" id="api-key-input" placeholder="sk-proj-..." />
+        <button id="save-api-key">Save</button>
+        <div id="api-key-status"></div>
+        <div style="font-size: 10px; color: #888; margin-top: 4px;">
+          Paste your API key above and click Save. Get one at <a href="https://platform.openai.com/api-keys" target="_blank" style="color: #4a9eff;">platform.openai.com</a>
+        </div>
+      </div>
+
       <div id="url"></div>
-      <div id="score"></div>
-      <div id="label"></div>
-      <pre id="explanation"></pre>
+      
+      <!-- Traffic Stats -->
+      <div id="traffic-stats">
+        <div id="event-count">Events: 0</div>
+        <button id="analyze-btn">Analyze Traffic with AI</button>
+        <button id="clear-btn">Clear Data</button>
+        <button id="reload-btn">Reload Page to Start Monitoring</button>
+      </div>
+
+      <!-- Loading State -->
+      <div id="loading" class="hidden">Analyzing traffic...</div>
+
+      <!-- AI Analysis Results -->
+      <div id="analysis-results" class="hidden">
+        <h2>AI Analysis</h2>
+        <div id="summary"></div>
+        <div id="privacy-concerns"></div>
+        <div id="security-concerns"></div>
+        <div id="recommendations"></div>
+      </div>
+
+      <!-- Error Display -->
+      <div id="error" class="hidden"></div>
+
+      <!-- Chat Interface -->
+      <div id="chat-section">
+        <h2>Chat with AI</h2>
+        <div id="chat-messages"></div>
+        <div id="chat-input-container">
+          <textarea id="chat-input" placeholder="Ask me anything about the web traffic or anything else..." rows="2"></textarea>
+          <button id="send-chat-btn">Send</button>
+        </div>
+        <div id="chat-loading" class="hidden">AI is thinking...</div>
+      </div>
     </div>
     <script src="popup.js"></script>
   </body>

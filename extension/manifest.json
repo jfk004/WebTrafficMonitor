@@ -2,13 +2,14 @@
   "manifest_version": 3,
   "name": "Web Traffic Monitor",
   "version": "0.1.0",
-  "description": "AI extension to monitor and aggregate outgoing web traffic from a given website’s URL parameters, DOM, API calls (via webRequest API), Beacon API usage and websocket connections to feed into Gemini API which creates a summary to inform users of what a website is doing with their data.",
+  "description": "Monitor web traffic and get AI-powered insights about what websites are doing with your data. Uses OpenAI to analyze network requests, API calls, WebSocket connections, and form submissions.",
   "permissions": [
     "tabs",
     "storage",
     "scripting",
     "activeTab",
-    "notifications"
+    "notifications",
+    "webRequest"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -25,7 +26,8 @@
     {
       "matches": ["<all_urls>"],
       "js": ["contentScript.js"],
-      "run_at": "document_idle"
+      "run_at": "document_start",
+      "all_frames": true
     }
   ]
 }
