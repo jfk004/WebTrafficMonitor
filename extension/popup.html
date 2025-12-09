@@ -28,6 +28,20 @@
         <button id="analyze-btn">Analyze Traffic with AI</button>
         <button id="clear-btn">Clear Data</button>
         <button id="reload-btn">Reload Page to Start Monitoring</button>
+        <button id="view-data-btn">View Raw Traffic Data</button>
+      </div>
+
+      <!-- Raw Traffic Data Viewer -->
+      <div id="traffic-data-viewer" class="hidden">
+        <h2>Raw Traffic Data</h2>
+        <div id="traffic-data-controls">
+          <button id="close-data-viewer">Close</button>
+          <button id="export-data-btn">Export JSON</button>
+          <label>
+            <input type="checkbox" id="auto-scroll" checked> Auto-scroll
+          </label>
+        </div>
+        <div id="traffic-data-content"></div>
       </div>
 
       <!-- Loading State -->

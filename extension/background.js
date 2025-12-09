@@ -95,16 +95,28 @@ function addTrafficEvent(tabId, event) {
   }
   
   const data = trafficData.get(tabId);
-  data.events.push({
+  const fullEvent = {
     ...event,
     timestamp: Date.now()
+  };
+  
+  data.events.push(fullEvent);
+  
+  // Log the event with full details
+  console.log(`[WebTrafficMonitor] 📤 OUTGOING REQUEST [Tab ${tabId}]:`, {
+    kind: event.kind,
+    method: event.method || "N/A",
+    url: event.url,
+    type: event.type || "N/A",
+    time: new Date(fullEvent.timestamp).toLocaleTimeString()
   });
   
-  // Keep only last 100 events per tab to avoid memory issues
-  if (data.events.length > 100) {
-    data.events = data.events.slice(-100);
+  // Keep only last 200 events per tab to avoid memory issues
+  if (data.events.length > 200) {
+    data.events = data.events.slice(-200);
   }
 }
+
 
 // Analyze traffic with OpenAI
 async function analyzeTrafficWithOpenAI(tabId) {
@@ -472,11 +484,20 @@ function setupWebRequestListeners() {
           
           // Update the event with response info
           const data = trafficData.get(tabId);
-          // Find matching event by URL
-          for (let i = data.events.length - 1; i >= 0; i--) {
+          // Find matching event by URL (check last 10 events for performance)
+          for (let i = data.events.length - 1; i >= Math.max(0, data.events.length - 10); i--) {
             if (data.events[i].url === details.url) {
               data.events[i].statusCode = details.statusCode;
               data.events[i].statusLine = details.statusLine;
+              
+              // Log the response
+              console.log(`[WebTrafficMonitor] 📥 INCOMING RESPONSE [Tab ${tabId}]:`, {
+                url: details.url,
+                statusCode: details.statusCode,
+                statusLine: details.statusLine,
+                method: data.events[i].method || "N/A",
+                time: new Date().toLocaleTimeString()
+              });
               break;
             }
           }

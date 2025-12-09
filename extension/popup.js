@@ -211,7 +211,92 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
 
   // Chat interface
   setupChatInterface();
+  
+  // Traffic data viewer
+  setupTrafficDataViewer();
 });
+
+// Setup traffic data viewer
+function setupTrafficDataViewer() {
+  const viewBtn = document.getElementById("view-data-btn");
+  const closeBtn = document.getElementById("close-data-viewer");
+  const viewer = document.getElementById("traffic-data-viewer");
+  const content = document.getElementById("traffic-data-content");
+  const exportBtn = document.getElementById("export-data-btn");
+  const autoScroll = document.getElementById("auto-scroll");
+  
+  viewBtn.addEventListener("click", () => {
+    viewer.classList.remove("hidden");
+    updateTrafficDataView();
+    // Auto-update every second
+    const interval = setInterval(() => {
+      if (!viewer.classList.contains("hidden")) {
+        updateTrafficDataView();
+      } else {
+        clearInterval(interval);
+      }
+    }, 1000);
+  });
+  
+  closeBtn.addEventListener("click", () => {
+    viewer.classList.add("hidden");
+  });
+  
+  exportBtn.addEventListener("click", () => {
+    chrome.runtime.sendMessage({ type: "get_traffic_data" }, (response) => {
+      if (response && response.success) {
+        const dataStr = JSON.stringify(response.data, null, 2);
+        const blob = new Blob([dataStr], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `traffic-data-${Date.now()}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+    });
+  });
+  
+  function updateTrafficDataView() {
+    chrome.runtime.sendMessage({ type: "get_traffic_data" }, (response) => {
+      if (response && response.success && response.data.events) {
+        const events = response.data.events;
+        content.innerHTML = "";
+        
+        if (events.length === 0) {
+          content.innerHTML = "<div style='padding: 20px; text-align: center; color: #aaa;'>No traffic data collected yet.</div>";
+          return;
+        }
+        
+        // Create a table or list of events
+        events.forEach((event, index) => {
+          const eventDiv = document.createElement("div");
+          eventDiv.className = "traffic-event";
+          eventDiv.innerHTML = `
+            <div class="traffic-event-header">
+              <span class="traffic-event-number">#${index + 1}</span>
+              <span class="traffic-event-kind">${event.kind || "unknown"}</span>
+              <span class="traffic-event-time">${new Date(event.timestamp || event.time).toLocaleTimeString()}</span>
+            </div>
+            <div class="traffic-event-details">
+              <div class="traffic-event-method">${event.method || "N/A"}</div>
+              <div class="traffic-event-url">${escapeHtml(event.url || "N/A")}</div>
+              ${event.statusCode ? `<div class="traffic-event-status">Status: ${event.statusCode} ${event.statusLine || ""}</div>` : ""}
+              ${event.type ? `<div class="traffic-event-type">Type: ${event.type}</div>` : ""}
+              ${event.fields ? `<div class="traffic-event-fields">Fields: ${JSON.stringify(event.fields, null, 2)}</div>` : ""}
+            </div>
+          `;
+          content.appendChild(eventDiv);
+        });
+        
+        // Auto-scroll to bottom if enabled
+        if (autoScroll.checked) {
+          content.scrollTop = content.scrollHeight;
+        }
+      }
+    });
+  }
+}
 
 // Chat with OpenAI
 async function sendChatMessage() {
