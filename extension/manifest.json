@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "CredGuard - Smart Login Protection",
+  "name": "Web Traffic Monitor",
   "version": "0.1.0",
-  "description": "Monitors credential popups and gives a safety rating for the current URL using ML and OSINT-backed risk scoring.",
+  "description": "AI extension to monitor and aggregate outgoing web traffic from a given website’s URL parameters, DOM, API calls (via webRequest API), Beacon API usage and websocket connections to feed into Gemini API which creates a summary to inform users of what a website is doing with their data.",
   "permissions": [
     "tabs",
     "storage",
