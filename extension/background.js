@@ -5,6 +5,9 @@ const OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
 // Store traffic data per tab
 const trafficData = new Map();
 
+// Expose for DevTools
+globalThis.trafficData = trafficData; 
+
 // Google tracking helpers
 
 function isTrackingParam(key) {
