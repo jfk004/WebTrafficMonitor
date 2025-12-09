@@ -201,6 +201,8 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       setTimeout(updateTrafficStats, 1000);
     });
   });
+
+  document.getElementById("create-ai-prompt-btn").addEventListener("click", createAIPrompt);
   
   // Test webRequest API
   chrome.runtime.sendMessage({ type: "test_webrequest" }, (response) => {
@@ -423,4 +425,417 @@ function setupChatInterface() {
   
   // Add welcome message
   addChatMessage("system", "Hello! I can help you analyze web traffic or answer questions. Type a message below.");
+}
+
+async function createAIPrompt() {
+  chrome.runtime.sendMessage(
+    { type: "get_traffic_data" },
+    async (response) => {
+      if (chrome.runtime.lastError) {
+        console.error(chrome.runtime.lastError);
+        showError("Error getting traffic data");
+        return;
+      }
+      
+      if (!response.success || !response.data || response.data.events.length === 0) {
+        showError("No traffic data available to create a prompt");
+        return;
+      }
+      
+      const data = response.data;
+      const events = data.events;
+      
+      // Get current tab URL for context
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const currentTab = tabs[0];
+      
+      // Create a comprehensive summary
+      const summary = {
+        currentUrl: currentTab.url,
+        totalEvents: events.length,
+        monitoringStartTime: new Date(data.startTime).toISOString(),
+        eventTypes: {},
+        domains: new Set(),
+        endpointsByType: {}
+      };
+      
+      // Analyze events
+      events.forEach(event => {
+        // Count event types
+        summary.eventTypes[event.kind] = (summary.eventTypes[event.kind] || 0) + 1;
+        
+        // Extract domains
+        if (event.url && event.url !== "N/A") {
+          try {
+            const urlObj = new URL(event.url);
+            summary.domains.add(urlObj.hostname);
+            
+            // Track endpoints by type
+            if (!summary.endpointsByType[event.kind]) {
+              summary.endpointsByType[event.kind] = new Set();
+            }
+            summary.endpointsByType[event.kind].add(urlObj.hostname + urlObj.pathname);
+          } catch (e) {
+            // Invalid URL, skip
+          }
+        }
+      });
+      
+      // Convert sets to arrays
+      summary.domains = Array.from(summary.domains);
+      for (const type in summary.endpointsByType) {
+        summary.endpointsByType[type] = Array.from(summary.endpointsByType[type]).slice(0, 10); // Limit to top 10
+      }
+      
+      // Format the prompt
+      let prompt = `# Web Traffic Analysis Request
+
+## Context
+- **Website URL**: ${currentTab.url}
+- **Analysis Start Time**: ${new Date(data.startTime).toLocaleString()}
+- **Total Events Captured**: ${events.length}
+- **Monitoring Duration**: ${Math.round((Date.now() - data.startTime) / 1000 / 60)} minutes
+
+## Traffic Overview
+`;
+
+      // Add event type breakdown
+      prompt += `\n### Event Types Breakdown:\n`;
+      for (const [type, count] of Object.entries(summary.eventTypes)) {
+        const percentage = ((count / events.length) * 100).toFixed(1);
+        prompt += `- **${type}**: ${count} events (${percentage}%)\n`;
+      }
+      
+      // Add domains contacted
+      prompt += `\n### Top Domains Contacted (${summary.domains.length} total):\n`;
+      summary.domains.slice(0, 15).forEach(domain => {
+        prompt += `- ${domain}\n`;
+      });
+      if (summary.domains.length > 15) {
+        prompt += `- ... and ${summary.domains.length - 15} more\n`;
+      }
+      
+      // Add specific endpoints by type
+      prompt += `\n### Key Endpoints by Type:\n`;
+      for (const [type, endpoints] of Object.entries(summary.endpointsByType)) {
+        if (endpoints.length > 0) {
+          prompt += `\n**${type.toUpperCase()}**:\n`;
+          endpoints.forEach(endpoint => {
+            prompt += `- ${endpoint}\n`;
+          });
+        }
+      }
+      
+      // Add sample of recent events
+      prompt += `\n## Recent Activity (last 20 events):\n`;
+      const recentEvents = events.slice(-20);
+      recentEvents.forEach((event, index) => {
+        const eventNum = events.length - 20 + index + 1;
+        prompt += `\n**Event #${eventNum}** [${event.kind.toUpperCase()}]:\n`;
+        prompt += `- **Time**: ${new Date(event.timestamp || event.time).toLocaleTimeString()}\n`;
+        if (event.method && event.method !== "N/A") {
+          prompt += `- **Method**: ${event.method}\n`;
+        }
+        if (event.url && event.url !== "N/A") {
+          prompt += `- **URL**: ${event.url}\n`;
+        }
+        if (event.statusCode) {
+          prompt += `- **Response**: ${event.statusCode} ${event.statusLine || ''}\n`;
+        }
+        if (event.type && event.type !== "other") {
+          prompt += `- **Content Type**: ${event.type}\n`;
+        }
+        if (event.fields) {
+          prompt += `- **Form Data**: ${JSON.stringify(event.fields, null, 2)}\n`;
+        }
+      });
+      
+      // Add statistics
+      prompt += `\n## Statistics:\n`;
+      prompt += `- Requests per minute: ${(events.length / ((Date.now() - data.startTime) / 1000 / 60)).toFixed(2)}\n`;
+      
+      // Add analysis request
+      prompt += `\n## Analysis Request:
+
+Please analyze this web traffic data and provide insights on:
+
+1. **Data Collection Patterns**: What types of data is this website collecting?
+2. **Third-Party Services**: Which external services is the website communicating with?
+3. **Privacy Implications**: What user data might be exposed to these services?
+4. **Security Assessment**: Any suspicious or potentially malicious activity?
+5. **Recommendations**: What should users be aware of, and what protections might help?
+
+Please structure your response with clear sections and actionable insights.`;
+
+      // Create a new tab with the prompt
+      createPromptTab(prompt);
+    }
+  );
+}
+
+function createPromptTab(prompt) {
+  // Create a new tab with the prompt in a formatted way
+  const promptHtml = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>AI Analysis Prompt - Web Traffic Monitor</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      line-height: 1.6;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+      background: #1e1e1e;
+      color: #e0e0e0;
+    }
+    .container {
+      background: #2a2a2a;
+      border-radius: 8px;
+      padding: 20px;
+      margin-top: 20px;
+    }
+    h1 {
+      color: #4a9eff;
+      border-bottom: 2px solid #4a9eff;
+      padding-bottom: 10px;
+    }
+    h2 {
+      color: #6bb6ff;
+      margin-top: 25px;
+    }
+    h3 {
+      color: #8cc8ff;
+    }
+    .prompt-box {
+      background: #1a1a1a;
+      border: 1px solid #444;
+      border-radius: 6px;
+      padding: 15px;
+      margin: 15px 0;
+      white-space: pre-wrap;
+      font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+      font-size: 13px;
+      line-height: 1.4;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+    .controls {
+      display: flex;
+      gap: 10px;
+      margin: 20px 0;
+      flex-wrap: wrap;
+    }
+    button {
+      padding: 10px 20px;
+      background: #4a9eff;
+      border: none;
+      border-radius: 6px;
+      color: white;
+      cursor: pointer;
+      font-size: 14px;
+      transition: background 0.2s;
+    }
+    button:hover {
+      background: #3a8eef;
+    }
+    button.secondary {
+      background: #555;
+    }
+    button.secondary:hover {
+      background: #444;
+    }
+    .success-message {
+      background: #2a4a2a;
+      border: 1px solid #2ecc71;
+      color: #2ecc71;
+      padding: 10px;
+      border-radius: 6px;
+      margin: 10px 0;
+      display: none;
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 15px;
+      margin: 20px 0;
+    }
+    .stat-card {
+      background: #333;
+      padding: 15px;
+      border-radius: 6px;
+      text-align: center;
+    }
+    .stat-value {
+      font-size: 24px;
+      font-weight: bold;
+      color: #4a9eff;
+      margin: 5px 0;
+    }
+    .stat-label {
+      font-size: 12px;
+      color: #aaa;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    .url-list {
+      background: #1a1a1a;
+      border-radius: 4px;
+      padding: 10px;
+      margin: 10px 0;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .url-item {
+      padding: 5px 10px;
+      border-bottom: 1px solid #333;
+      font-family: monospace;
+      font-size: 12px;
+    }
+    .url-item:last-child {
+      border-bottom: none;
+    }
+  </style>
+</head>
+<body>
+  <h1>🔍 Web Traffic Analysis Prompt</h1>
+  
+  <div class="stats">
+    <div class="stat-card">
+      <div class="stat-value" id="event-count">0</div>
+      <div class="stat-label">Total Events</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="domain-count">0</div>
+      <div class="stat-label">Unique Domains</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="duration">0m</div>
+      <div class="stat-label">Monitoring Time</div>
+    </div>
+  </div>
+  
+  <div class="controls">
+    <button id="copy-btn">📋 Copy Prompt to Clipboard</button>
+    <button id="open-chatgpt" class="secondary">🤖 Open ChatGPT</button>
+    <button id="open-claude" class="secondary">🧠 Open Claude</button>
+    <button id="open-gemini" class="secondary">✨ Open Gemini</button>
+    <button id="refresh-btn" class="secondary">🔄 Refresh Data</button>
+  </div>
+  
+  <div id="success-message" class="success-message">
+    ✅ Prompt copied to clipboard!
+  </div>
+  
+  <div class="container">
+    <h2>Analysis Prompt</h2>
+    <p>Copy this prompt and paste it into your preferred AI assistant for analysis:</p>
+    
+    <div class="prompt-box" id="prompt-content"></div>
+    
+    <h3>How to use:</h3>
+    <ol>
+      <li>Click "Copy Prompt to Clipboard"</li>
+      <li>Open your preferred AI chat (ChatGPT, Claude, Gemini, etc.)</li>
+      <li>Paste the prompt and ask for analysis</li>
+      <li>Or use the buttons above to open directly</li>
+    </ol>
+  </div>
+  
+  <div class="container">
+    <h2>Quick Stats</h2>
+    <div id="event-types"></div>
+    
+    <h3>Top Domains Contacted:</h3>
+    <div class="url-list" id="domain-list"></div>
+  </div>
+  
+  <script>
+    const promptContent = ${JSON.stringify(prompt)};
+    document.getElementById('prompt-content').textContent = promptContent;
+    
+    // Parse stats from prompt
+    const eventMatch = prompt.match(/Total Events Captured[^:]*: (\\d+)/);
+    const domainMatch = prompt.match(/Top Domains Contacted \\((\\d+) total\\)/);
+    const durationMatch = prompt.match(/Monitoring Duration[^:]*: (\\d+) minutes/);
+    
+    if (eventMatch) document.getElementById('event-count').textContent = eventMatch[1];
+    if (domainMatch) document.getElementById('domain-count').textContent = domainMatch[1];
+    if (durationMatch) document.getElementById('duration').textContent = durationMatch[1] + 'm';
+    
+    // Extract event types
+    const eventTypesSection = prompt.match(/### Event Types Breakdown:[\\s\\S]*?(?=\\n\\n###|$)/);
+    if (eventTypesSection) {
+      const eventTypesDiv = document.getElementById('event-types');
+      eventTypesDiv.innerHTML = eventTypesSection[0].replace(/\\n/g, '<br>').replace(/\\*\\*/g, '<strong>').replace(/\\*\\*/g, '</strong>');
+    }
+    
+    // Extract domains
+    const domainSection = prompt.match(/### Top Domains Contacted[\\s\\S]*?(?=\\n\\n###|$)/);
+    if (domainSection) {
+      const lines = domainSection[0].split('\\n');
+      const domainList = document.getElementById('domain-list');
+      lines.forEach(line => {
+        if (line.includes('- ')) {
+          const domain = line.replace('- ', '').trim();
+          if (domain && !domain.includes('... and')) {
+            const div = document.createElement('div');
+            div.className = 'url-item';
+            div.textContent = domain;
+            domainList.appendChild(div);
+          }
+        }
+      });
+    }
+    
+    // Copy button
+    document.getElementById('copy-btn').addEventListener('click', () => {
+      navigator.clipboard.writeText(promptContent).then(() => {
+        const success = document.getElementById('success-message');
+        success.style.display = 'block';
+        setTimeout(() => {
+          success.style.display = 'none';
+        }, 3000);
+      });
+    });
+    
+    // Open AI services
+    document.getElementById('open-chatgpt').addEventListener('click', () => {
+      window.open('https://chat.openai.com/', '_blank');
+    });
+    
+    document.getElementById('open-claude').addEventListener('click', () => {
+      window.open('https://claude.ai/', '_blank');
+    });
+    
+    document.getElementById('open-gemini').addEventListener('click', () => {
+      window.open('https://gemini.google.com/', '_blank');
+    });
+    
+    document.getElementById('refresh-btn').addEventListener('click', () => {
+      chrome.runtime.sendMessage({ type: 'refresh_prompt' }, (response) => {
+        if (response && response.success) {
+          location.reload();
+        }
+      });
+    });
+  </script>
+</body>
+</html>`;
+  
+  // Create a new tab with the HTML
+  chrome.tabs.create({
+    url: 'data:text/html;charset=utf-8,' + encodeURIComponent(promptHtml)
+  });
+}
+
+function showError(message) {
+  const errorDiv = document.getElementById('error');
+  errorDiv.textContent = message;
+  errorDiv.classList.remove('hidden');
+  setTimeout(() => {
+    errorDiv.classList.add('hidden');
+  }, 5000);
 }

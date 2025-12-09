@@ -253,6 +253,12 @@ Format your response as JSON with keys: summary, privacyConcerns, securityConcer
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const tabId = sender.tab?.id;
   
+  if (message.type === "refresh_prompt") {
+    // Force update of traffic data
+    sendResponse({ success: true });
+    return false;
+  }
+
   if (message.type === "page_event") {
     // Collect traffic data
     if (tabId !== undefined && tabId !== null) {
