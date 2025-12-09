@@ -100,6 +100,52 @@ h3 {
   border-radius: 4px;
 }
 
+#current-tab-summary {
+  background: #2a2a2a;
+  padding: 10px;
+  border-radius: 6px;
+  margin-bottom: 12px;
+}
+
+#current-tab-summary h2 {
+  font-size: 14px;
+  margin: 0 0 8px 0;
+  color: #4a9eff;
+}
+
+#summary-status {
+  font-size: 11px;
+  color: #aaa;
+  margin-bottom: 8px;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px;
+}
+
+.summary-item {
+  background: #1e1e1e;
+  padding: 8px;
+  border-radius: 4px;
+  border: 1px solid #333;
+}
+
+.summary-label {
+  font-size: 11px;
+  color: #aaa;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.summary-value {
+  font-size: 14px;
+  font-weight: bold;
+  color: #4a9eff;
+}
+
 #traffic-stats {
   background: #2a2a2a;
   padding: 10px;
