@@ -1108,14 +1108,10 @@ function createPromptTab(prompt, stats) {
   </div>
   
   <div class="controls">
-    <button id="copy-btn">📋 Copy Prompt to Clipboard</button>
     <button id="open-chatgpt" class="secondary">🤖 Open ChatGPT</button>
     <button id="open-claude" class="secondary">🧠 Open Claude</button>
     <button id="open-gemini" class="secondary">✨ Open Gemini</button>
-  </div>
-  
-  <div id="success-message" class="success-message">
-    ✅ Prompt copied to clipboard!
+    <button id="open-deepseek" class="secondary">🔎 Open DeepSeek</button>
   </div>
   
   <div class="container">
@@ -1176,17 +1172,6 @@ function createPromptTab(prompt, stats) {
       });
     }
     
-    // Copy button
-    document.getElementById('copy-btn').addEventListener('click', () => {
-      navigator.clipboard.writeText(promptContent).then(() => {
-        const success = document.getElementById('success-message');
-        success.style.display = 'block';
-        setTimeout(() => {
-          success.style.display = 'none';
-        }, 3000);
-      });
-    });
-    
     // Open AI services
     document.getElementById('open-chatgpt').addEventListener('click', () => {
       window.open('https://chat.openai.com/', '_blank');
@@ -1196,6 +1181,9 @@ function createPromptTab(prompt, stats) {
     });
     document.getElementById('open-gemini').addEventListener('click', () => {
       window.open('https://gemini.google.com/', '_blank');
+    });
+    document.getElementById('open-deepseek').addEventListener('click', () => {
+      window.open('https://chat.deepseek.com/', '_blank');
     });
   </script>
 </body>
