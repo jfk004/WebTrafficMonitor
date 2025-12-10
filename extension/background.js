@@ -15,16 +15,17 @@ globalThis.trafficData = trafficData;
 function isTrackingParam(key) {
   if (key.startsWith("utm_")) return true;
 
-  const known = [
-    "gclid",     // Google Ads click ID
-    "fbclid",    // Facebook click ID
-    "igshid",    // Instagram share ID
-    "mc_cid",    // Mailchimp campaign
-    "mc_eid",
-    "yclid",     // Yandex
+    const known = [
+    "gclid", "gbraid", "wbraid",   // Google Ads IDs
+    "fbclid",                      // Facebook click ID
+    "ttclid",                      // TikTok click ID
+    "igshid",                      // Instagram share ID
+    "mc_cid", "mc_eid",            // Mailchimp
+    "yclid",                       // Yandex
     "vero_id",
-    "msclkid"    // Microsoft Ads
+    "msclkid"                      // Microsoft Ads
   ];
+
 
   return known.includes(key.toLowerCase());
 }
@@ -387,15 +388,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status === "complete" && tab.url) {
-    if (!trafficData.has(tabId)) {
-      trafficData.set(tabId, {
-        url: tab.url,
-        events: [],
-        startTime: Date.now()
-      });
-    } else {
-      trafficData.get(tabId).url = tab.url;
-    }
+    // 🔁 Every time the tab finishes loading, start a fresh session
+    trafficData.set(tabId, {
+      url: tab.url,
+      events: [],
+      startTime: Date.now()
+    });
+
+    
+
 
     // Inject lightweight PerformanceObserver in the page
     if (
@@ -476,11 +477,11 @@ function setupWebRequestListeners() {
           }
 
           // Detect requests that originate from Google Search
-          const initiator = details.initiator || details.documentUrl || "";
-          if (initiator.startsWith("https://www.google.")) {
+          // const initiator = details.initiator || details.documentUrl || "";
+          // if (initiator.startsWith("https://www.google.")) {
             // Triggered by a click/load from Google
             handleGoogleRequest(details.url);
-          }
+          //}
 
           // Initialize if needed
           if (!trafficData.has(tabId)) {

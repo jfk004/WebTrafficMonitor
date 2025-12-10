@@ -407,7 +407,7 @@ h3 {
   padding: 8px;
   max-height: 400px;
   overflow-y: auto;
-  font-family: 'Courier New', monospace;
+  font-family: "Courier New", monospace;
   font-size: 11px;
 }
 
@@ -489,4 +489,70 @@ h3 {
   white-space: pre-wrap;
   max-height: 100px;
   overflow-y: auto;
+}
+
+/* Tracking Parameters Panel */
+#tracking-panel {
+  background: #2a2a2a;
+  padding: 10px;
+  border-radius: 6px;
+  margin-bottom: 12px;
+}
+
+#tracking-panel h2 {
+  font-size: 14px;
+  margin: 0 0 8px 0;
+  color: #4a9eff;
+}
+
+.tracking-empty {
+  font-size: 11px;
+  color: #aaaaaa;
+}
+
+.tracking-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.tracking-item {
+  background: #1e1e1e;
+  border-radius: 4px;
+  padding: 6px 8px;
+  border: 1px solid #333333;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.tracking-item-main {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.tracking-host {
+  font-weight: 500;
+}
+
+.tracking-badge {
+  background: #3b82f6;
+  color: #ffffff;
+  font-size: 10px;
+  border-radius: 999px;
+  padding: 2px 6px;
+}
+
+.tracking-params {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  word-break: break-all;
+}
+
+.tracking-time {
+  font-size: 10px;
+  color: #999999;
+  margin-top: 2px;
 }

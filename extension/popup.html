@@ -16,7 +16,13 @@
         <button id="save-api-key">Save</button>
         <div id="api-key-status"></div>
         <div style="font-size: 10px; color: #888; margin-top: 4px;">
-          Paste your API key above and click Save. Get one at <a href="https://platform.openai.com/api-keys" target="_blank" style="color: #4a9eff;">platform.openai.com</a>
+          Paste your API key above and click Save. Get one at
+          <a
+            href="https://platform.openai.com/api-keys"
+            target="_blank"
+            style="color: #4a9eff;"
+            >platform.openai.com</a
+          >
         </div>
       </div>
 
@@ -45,6 +51,17 @@
           </div>
         </div>
       </div>
+
+      <!-- Tracking Parameters Panel -->
+      <div id="tracking-panel">
+        <h2>Tracking Parameters</h2>
+        <div id="tracking-empty" class="tracking-empty">
+          No ad/tracking parameters detected for this site yet.
+        </div>
+        <div id="tracking-list" class="tracking-list">
+          <!-- Filled by popup.js -->
+        </div>
+      </div>
       
       <!-- Traffic Stats -->
       <div id="traffic-stats">
@@ -63,7 +80,7 @@
           <button id="close-data-viewer">Close</button>
           <button id="export-data-btn">Export JSON</button>
           <label>
-            <input type="checkbox" id="auto-scroll" checked> Auto-scroll
+            <input type="checkbox" id="auto-scroll" checked /> Auto-scroll
           </label>
         </div>
         <div id="traffic-data-content"></div>
@@ -89,7 +106,11 @@
         <h2>Chat with AI</h2>
         <div id="chat-messages"></div>
         <div id="chat-input-container">
-          <textarea id="chat-input" placeholder="Ask me anything about the web traffic or anything else..." rows="2"></textarea>
+          <textarea
+            id="chat-input"
+            placeholder="Ask me anything about the web traffic or anything else..."
+            rows="2"
+          ></textarea>
           <button id="send-chat-btn">Send</button>
         </div>
         <div id="chat-loading" class="hidden">AI is thinking...</div>

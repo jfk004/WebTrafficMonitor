@@ -1,14 +1,6 @@
-// popup.js
-
 let currentTabId = null;
-
-// === Helpers ===
-
-function escapeHtml(text) {
-  const div = document.createElement("div");
-  div.textContent = text;
-  return div.innerHTML.replace(/\n/g, "<br>");
-}
+let lastEventsCount = -1;
+let lastTrackingUrl = null;
 
 function formatDuration(ms) {
   if (!ms || ms < 0) return "0s";
@@ -36,18 +28,15 @@ function refreshTrafficSummary() {
     return;
   }
 
-  // Default state while loading
-  statusEl.textContent = "Loading summary...";
-  eventsEl.textContent = "0";
-  domainsEl.textContent = "0";
-  durationEl.textContent = "0s";
-  lastEventEl.textContent = "—";
-  if (eventCountLabel) eventCountLabel.textContent = "Events: 0";
-
   chrome.runtime.sendMessage({ type: "get_traffic_data" }, (response) => {
     if (!response || !response.success) {
       statusEl.textContent = "No traffic data yet. Visit or reload a page.";
       if (urlEl) urlEl.textContent = "No URL (no active tab data yet)";
+      if (eventsEl) eventsEl.textContent = "0";
+      if (domainsEl) domainsEl.textContent = "0";
+      if (durationEl) durationEl.textContent = "0s";
+      if (lastEventEl) lastEventEl.textContent = "—";
+      if (eventCountLabel) eventCountLabel.textContent = "Events: 0";
       return;
     }
 
@@ -55,39 +44,41 @@ function refreshTrafficSummary() {
     const events = data.events || [];
     const now = Date.now();
 
-    // URL at top
     if (urlEl) {
       urlEl.textContent = data.url || "Unknown URL";
     }
 
-    // Events count
+    // Only refresh Tracking Parameters when there is actually new traffic / URL
+    if (data.url !== lastTrackingUrl || events.length !== lastEventsCount) {
+      updateTrackingPanelForUrl(data.url);
+      lastTrackingUrl = data.url;
+      lastEventsCount = events.length;
+    }
+
+    // Update simple stats
     eventsEl.textContent = String(events.length);
     if (eventCountLabel) {
       eventCountLabel.textContent = `Events: ${events.length}`;
     }
 
-    // Unique domains
     const domains = new Set();
     events.forEach((e) => {
       if (!e.url) return;
       try {
         const u = new URL(e.url);
         domains.add(u.hostname);
-      } catch (err) {
-        // ignore parse errors
+      } catch {
+        // ignore
       }
     });
     domainsEl.textContent = String(domains.size);
 
     // Monitoring duration
-    if (data.startTime) {
-      const elapsed = now - data.startTime;
-      durationEl.textContent = formatDuration(elapsed);
-    } else {
-      durationEl.textContent = "0s";
-    }
+    const startTime = data.startTime || now;
+    const durationMs = Math.max(0, now - startTime);
+    durationEl.textContent = formatDuration(durationMs);
 
-    // Last activity & status
+    // Last event time + status
     if (events.length > 0) {
       const last = events[events.length - 1];
       const ts = last.timestamp || last.time || now;
@@ -100,27 +91,189 @@ function refreshTrafficSummary() {
   });
 }
 
-// =======================
-// API key handling
-// =======================
 
-// Load API key from storage
-async function loadApiKey() {
-  const result = await chrome.storage.local.get(["openai_api_key"]);
-  const input = document.getElementById("api-key-input");
-  if (result.openai_api_key) {
-    input.value = result.openai_api_key;
-    updateApiKeyStatus("✓ API key saved", "success");
-  } else {
-    updateApiKeyStatus("⚠ API key not set", "warning");
+function updateTrackingPanelForUrl(rawUrl) {
+  const emptyEl = document.getElementById("tracking-empty");
+  const listEl = document.getElementById("tracking-list");
+  if (!emptyEl || !listEl) return;
+
+  if (!rawUrl) {
+    // No URL at all, show empty state once
+    listEl.innerHTML = "";
+    emptyEl.classList.remove("hidden");
+    emptyEl.textContent =
+      "No ad/tracking parameters detected for this site yet.";
+    return;
+  }
+
+  let origin;
+  try {
+    origin = new URL(rawUrl).origin;
+  } catch {
+    return;
+  }
+
+  chrome.storage.local.get({ googleTrackingLog: [] }, (data) => {
+    const log = data.googleTrackingLog || [];
+    const matching = log.filter(
+      (entry) => entry.destinationOrigin === origin
+    );
+
+    if (!matching.length) {
+      // Only now do we clear, since we know there is nothing
+      listEl.innerHTML = "";
+      emptyEl.classList.remove("hidden");
+      emptyEl.textContent =
+        "No ad/tracking parameters detected for this site yet.";
+      return;
+    }
+
+    emptyEl.classList.add("hidden");
+    listEl.innerHTML = "";
+
+    // Show the last few tracking hits for this origin
+    matching
+      .slice(-5)
+      .reverse()
+      .forEach((entry) => {
+        const item = document.createElement("div");
+        item.className = "tracking-item";
+
+        const main = document.createElement("div");
+        main.className = "tracking-item-main";
+
+        const hostSpan = document.createElement("span");
+        hostSpan.className = "tracking-host";
+        try {
+          hostSpan.textContent = new URL(entry.originalUrl).hostname;
+        } catch {
+          hostSpan.textContent = origin;
+        }
+
+        const badge = document.createElement("span");
+        badge.className = "tracking-badge";
+        badge.textContent = "Tracking params";
+
+        main.appendChild(hostSpan);
+        main.appendChild(badge);
+
+        const paramsDiv = document.createElement("div");
+        paramsDiv.className = "tracking-params";
+        paramsDiv.textContent = Object.entries(entry.trackingParams)
+          .map(([k, v]) => `${k}=${v}`)
+          .join("&");
+
+        const timeDiv = document.createElement("div");
+        timeDiv.className = "tracking-time";
+        timeDiv.textContent = new Date(entry.time).toLocaleTimeString();
+
+        item.appendChild(main);
+        item.appendChild(paramsDiv);
+        item.appendChild(timeDiv);
+
+        listEl.appendChild(item);
+      });
+  });
+}
+
+
+function updateTrafficStats(quiet = false) {
+  const eventCount = document.getElementById("event-count");
+  const loading = document.getElementById("loading");
+  const errorDiv = document.getElementById("error");
+
+  if (!eventCount || !loading || !errorDiv) {
+    console.warn("[WebTrafficMonitor] Missing traffic stats UI elements.");
+    return;
+  }
+
+  // Only show the spinner on non-quiet calls (initial load, manual actions)
+  if (!quiet) {
+    loading.classList.remove("hidden");
+    errorDiv.classList.add("hidden");
+  }
+
+  chrome.runtime.sendMessage({ type: "get_traffic_data" }, (response) => {
+    if (!quiet) {
+      loading.classList.add("hidden");
+    }
+
+    if (!response || !response.success) {
+      eventCount.textContent = "Events: 0";
+      return;
+    }
+
+    const data = response.data;
+    const events = data.events || [];
+    eventCount.textContent = `Events: ${events.length}`;
+  });
+}
+
+
+function clearTrafficData() {
+  chrome.runtime.sendMessage({ type: "clear_traffic_data" }, (response) => {
+    if (!response || !response.success) {
+      showError("Failed to clear traffic data.");
+      return;
+    }
+
+    // Reset UI
+    const eventCount = document.getElementById("event-count");
+    const summaryEvents = document.getElementById("summary-events");
+    const summaryDomains = document.getElementById("summary-domains");
+    const summaryDuration = document.getElementById("summary-duration");
+    const summaryLastEvent = document.getElementById("summary-last-event");
+    const summaryStatus = document.getElementById("summary-status");
+    const urlEl = document.getElementById("url");
+
+    if (eventCount) eventCount.textContent = "Events: 0";
+    if (summaryEvents) summaryEvents.textContent = "0";
+    if (summaryDomains) summaryDomains.textContent = "0";
+    if (summaryDuration) summaryDuration.textContent = "0s";
+    if (summaryLastEvent) summaryLastEvent.textContent = "—";
+    if (summaryStatus)
+      summaryStatus.textContent =
+        "Traffic data cleared. Reload the page to start fresh.";
+    if (urlEl) urlEl.textContent = "No URL (data cleared)";
+  });
+}
+
+/* =========================
+   AI ANALYSIS HELPERS
+   ========================= */
+
+function updateApiKeyStatus(message, statusClass) {
+  const statusEl = document.getElementById("api-key-status");
+  if (!statusEl) return;
+
+  statusEl.textContent = message;
+  statusEl.className = "";
+  if (statusClass) {
+    statusEl.classList.add(statusClass);
   }
 }
 
-// Save API key
-document.getElementById("save-api-key").addEventListener("click", async () => {
-  const apiKey = document.getElementById("api-key-input").value.trim();
+async function loadApiKey() {
+  const input = document.getElementById("api-key-input");
+  if (!input) return;
+
+  chrome.storage.local.get(["openai_api_key"], (result) => {
+    if (result.openai_api_key) {
+      input.value = result.openai_api_key;
+      updateApiKeyStatus("✓ API key is saved", "success");
+    } else {
+      updateApiKeyStatus("No API key saved yet", "warning");
+    }
+  });
+}
+
+async function saveApiKey() {
+  const input = document.getElementById("api-key-input");
+  if (!input) return;
+
+  const apiKey = input.value.trim();
   if (!apiKey) {
-    updateApiKeyStatus("Please enter an API key", "error");
+    updateApiKeyStatus("API key cannot be empty", "error");
     return;
   }
 
@@ -135,218 +288,396 @@ document.getElementById("save-api-key").addEventListener("click", async () => {
 
     // Clear any previous error messages in chat
     const chatMessages = document.getElementById("chat-messages");
-    const errorMsgs = chatMessages.querySelectorAll(".chat-message-system");
-    errorMsgs.forEach((msg) => {
-      if (msg.textContent.includes("API key")) {
-        msg.remove();
-      }
-    });
-  } catch (error) {
-    updateApiKeyStatus(`Error saving: ${error.message}`, "error");
+    if (chatMessages) {
+      const systemMessages =
+        chatMessages.querySelectorAll(".chat-message-system");
+      systemMessages.forEach((msg) => msg.remove());
+    }
+  } catch (err) {
+    console.error("Error saving API key:", err);
+    updateApiKeyStatus("Failed to save API key", "error");
   }
-});
-
-function updateApiKeyStatus(message, type) {
-  const status = document.getElementById("api-key-status");
-  status.textContent = message;
-  status.className = type;
 }
 
-// =======================
-// Traffic stats
-// =======================
-
-async function updateTrafficStats() {
-  chrome.runtime.sendMessage({ type: "get_traffic_data" }, (response) => {
-    if (chrome.runtime.lastError) {
-      console.error(chrome.runtime.lastError);
-      document.getElementById("event-count").textContent =
-        "Events: Error loading data";
-      return;
-    }
-
-    if (response && response.success) {
-      const eventCount = response.data.events.length;
-      const eventCountEl = document.getElementById("event-count");
-      if (eventCountEl) {
-        eventCountEl.textContent = `Events: ${eventCount}`;
-      }
-
-      // Show message if no events yet
-      const statsEl = document.getElementById("traffic-stats");
-      if (eventCount === 0) {
-        if (statsEl && !statsEl.querySelector(".no-events-msg")) {
-          const msg = document.createElement("div");
-          msg.className = "no-events-msg";
-          msg.style.cssText =
-            "font-size: 11px; color: #aaa; margin-top: 8px; font-style: italic;";
-          msg.textContent =
-            "No traffic collected yet. Navigate or interact with the page to collect data.";
-          statsEl.appendChild(msg);
-        }
-      } else {
-        const msg = statsEl?.querySelector(".no-events-msg");
-        if (msg) msg.remove();
-      }
-    } else {
-      document.getElementById("event-count").textContent =
-        "Events: No data";
-    }
+async function getApiKey() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(["openai_api_key"], (result) => {
+      resolve(result.openai_api_key || null);
+    });
   });
 }
 
-// =======================
-// AI analysis
-// =======================
-
-async function analyzeTraffic() {
-  if (!currentTabId) return;
-
+async function analyzeTrafficWithAI() {
   const loading = document.getElementById("loading");
-  const results = document.getElementById("analysis-results");
-  const error = document.getElementById("error");
+  const errorDiv = document.getElementById("error");
+  const resultsDiv = document.getElementById("analysis-results");
+  const summaryDiv = document.getElementById("summary");
+  const privacyDiv = document.getElementById("privacy-concerns");
+  const securityDiv = document.getElementById("security-concerns");
+  const recommendationsDiv = document.getElementById("recommendations");
+
+  if (
+    !loading ||
+    !errorDiv ||
+    !resultsDiv ||
+    !summaryDiv ||
+    !privacyDiv ||
+    !securityDiv ||
+    !recommendationsDiv
+  ) {
+    console.warn("[WebTrafficMonitor] Missing analysis UI elements.");
+    return;
+  }
 
   loading.classList.remove("hidden");
-  results.classList.add("hidden");
-  error.classList.add("hidden");
+  errorDiv.classList.add("hidden");
+  resultsDiv.classList.add("hidden");
 
-  chrome.runtime.sendMessage({ type: "analyze_traffic" }, (response) => {
+  const apiKey = await getApiKey();
+  if (!apiKey) {
     loading.classList.add("hidden");
+    showError("Please set your OpenAI API key first.");
+    return;
+  }
 
-    if (chrome.runtime.lastError) {
-      error.textContent = chrome.runtime.lastError.message;
-      error.classList.remove("hidden");
-      return;
-    }
+  chrome.runtime.sendMessage(
+    { type: "get_traffic_data" },
+    async (response) => {
+      if (!response || !response.success || !response.data) {
+        loading.classList.add("hidden");
+        showError("No traffic data available for analysis.");
+        return;
+      }
 
-    if (response.error) {
-      error.textContent = response.error;
-      error.classList.remove("hidden");
-      return;
-    }
+      const data = response.data;
+      const events = data.events || [];
 
-    if (response.success && response.analysis) {
-      displayAnalysis(response.analysis, response.metadata);
-      results.classList.remove("hidden");
+      if (events.length === 0) {
+        loading.classList.add("hidden");
+        showError("No events captured yet. Browse the site first.");
+        return;
+      }
+
+      const tabs = await chrome.tabs.query({
+        active: true,
+        currentWindow: true,
+      });
+      const currentTab = tabs[0];
+
+      const prompt = buildAnalysisPrompt(currentTab.url, data);
+
+      try {
+        const aiResponse = await callOpenAI(apiKey, prompt);
+        loading.classList.add("hidden");
+
+        if (!aiResponse || !aiResponse.choices?.length) {
+          showError("AI did not return a valid response.");
+          return;
+        }
+
+        const content = aiResponse.choices[0].message.content || "";
+        renderAIAnalysisContent(content);
+      } catch (err) {
+        console.error("Error calling OpenAI:", err);
+        loading.classList.add("hidden");
+        showError("Error calling OpenAI. Check the console for details.");
+      }
     }
-  });
+  );
 }
 
-document.getElementById("analyze-btn").addEventListener("click", analyzeTraffic);
+function buildAnalysisPrompt(url, data) {
+  const events = data.events || [];
+  const startTime = data.startTime || Date.now();
+  const durationMs = Date.now() - startTime;
+  const duration = formatDuration(durationMs);
 
-function displayAnalysis(analysis, metadata) {
-  document.getElementById("summary").innerHTML = `
-    <h3>Summary</h3>
-    <p>${analysis.summary || "No summary available"}</p>
-  `;
+  const domains = new Set();
+  const methods = new Set();
+  const eventTypes = {};
 
-  document.getElementById("privacy-concerns").innerHTML = `
-    <h3>Privacy Concerns</h3>
-    <p>${
-      analysis.privacyConcerns ||
-      "No specific privacy concerns identified"
-    }</p>
-  `;
+  events.forEach((e) => {
+    if (e.url) {
+      try {
+        const u = new URL(e.url);
+        domains.add(u.hostname);
+      } catch {
+        // ignore
+      }
+    }
+    if (e.method) methods.add(e.method);
+    if (e.kind) {
+      eventTypes[e.kind] = (eventTypes[e.kind] || 0) + 1;
+    }
+  });
 
-  document.getElementById("security-concerns").innerHTML = `
-    <h3>Security Concerns</h3>
-    <p>${
-      analysis.securityConcerns ||
-      "No specific security concerns identified"
-    }</p>
-  `;
+  let prompt = `You are a privacy and security expert. Analyze the following web traffic from ${url}.\n\n`;
+  prompt += `Total events: ${events.length}\n`;
+  prompt += `Monitoring duration: ${duration}\n`;
+  prompt += `Unique domains: ${domains.size}\n`;
+  prompt += `HTTP methods: ${Array.from(methods).join(", ") || "N/A"}\n\n`;
 
-  document.getElementById("recommendations").innerHTML = `
-    <h3>Recommendations</h3>
-    <p>${analysis.recommendations || "No specific recommendations"}</p>
-  `;
+  prompt += `Event type breakdown:\n`;
+  for (const [type, count] of Object.entries(eventTypes)) {
+    prompt += `- ${type}: ${count}\n`;
+  }
 
-  if (metadata) {
-    const eventCountEl = document.getElementById("event-count");
-    if (eventCountEl) {
-      eventCountEl.textContent = `Events: ${metadata.totalEvents}`;
+  prompt += `\nSample of recent events:\n`;
+  const recent = events.slice(-20);
+  recent.forEach((e, idx) => {
+    prompt += `\n[Event #${events.length - recent.length + idx + 1}] ${
+      e.kind || "unknown"
+    }\n`;
+    if (e.method) prompt += `- Method: ${e.method}\n`;
+    if (e.url) prompt += `- URL: ${e.url}\n`;
+    if (e.statusCode) prompt += `- Status: ${e.statusCode}\n`;
+    if (e.type) prompt += `- Type: ${e.type}\n`;
+    if (e.requestBody) {
+      const bodyStr =
+        typeof e.requestBody === "string"
+          ? e.requestBody
+          : JSON.stringify(e.requestBody).slice(0, 500);
+      prompt += `- Request body (truncated): ${bodyStr}\n`;
+    }
+  });
+
+  prompt += `\nPlease provide:\n`;
+  prompt += `1. A high-level summary of what this site is doing with user data.\n`;
+  prompt += `2. Any privacy concerns (e.g., tracking, fingerprinting, data sharing).\n`;
+  prompt += `3. Any security concerns (e.g., mixed content, suspicious endpoints).\n`;
+  prompt += `4. Concrete recommendations for an average user to protect their privacy and security on this site.\n`;
+
+  return prompt;
+}
+
+async function callOpenAI(apiKey, prompt) {
+  const body = {
+    model: "gpt-5.1-mini",
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are a cybersecurity and privacy expert helping users understand web tracking and data collection.",
+      },
+      { role: "user", content: prompt },
+    ],
+    temperature: 0.4,
+  };
+
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`OpenAI API error: ${response.status} - ${text}`);
+  }
+
+  return response.json();
+}
+
+function renderAIAnalysisContent(content) {
+  const resultsDiv = document.getElementById("analysis-results");
+  const summaryDiv = document.getElementById("summary");
+  const privacyDiv = document.getElementById("privacy-concerns");
+  const securityDiv = document.getElementById("security-concerns");
+  const recommendationsDiv = document.getElementById("recommendations");
+
+  if (
+    !resultsDiv ||
+    !summaryDiv ||
+    !privacyDiv ||
+    !securityDiv ||
+    !recommendationsDiv
+  ) {
+    console.warn("[WebTrafficMonitor] Missing analysis UI elements.");
+    return;
+  }
+
+  resultsDiv.classList.remove("hidden");
+  summaryDiv.textContent = "";
+  privacyDiv.textContent = "";
+  securityDiv.textContent = "";
+  recommendationsDiv.textContent = "";
+
+  const sections = {
+    Summary: summaryDiv,
+    "Privacy Concerns": privacyDiv,
+    "Security Concerns": securityDiv,
+    Recommendations: recommendationsDiv,
+  };
+
+  let currentSection = summaryDiv;
+  let currentTitle = "Summary";
+
+  const lines = content.split("\n");
+  for (const line of lines) {
+    const match = line.match(/^#+\s*(.+)$/);
+    if (match) {
+      const title = match[1].trim();
+      if (sections[title]) {
+        currentSection = sections[title];
+        currentTitle = title;
+        continue;
+      }
+    }
+
+    if (line.trim()) {
+      currentSection.textContent += (currentSection.textContent ? "\n" : "") +
+        line;
     }
   }
 }
 
-// =======================
-// Clear traffic data
-// =======================
+/* =========================
+   CHAT INTERFACE
+   ========================= */
 
-function clearTrafficData() {
-  chrome.runtime.sendMessage({ type: "clear_traffic_data" }, (response) => {
-    if (chrome.runtime.lastError) {
-      console.error(chrome.runtime.lastError);
+function addChatMessage(role, content) {
+  const messagesDiv = document.getElementById("chat-messages");
+  if (!messagesDiv) return;
+
+  const msg = document.createElement("div");
+  msg.classList.add("chat-message");
+
+  if (role === "user") {
+    msg.classList.add("chat-message-user");
+  } else if (role === "assistant") {
+    msg.classList.add("chat-message-assistant");
+  } else {
+    msg.classList.add("chat-message-system");
+  }
+
+  const roleDiv = document.createElement("div");
+  roleDiv.classList.add("chat-message-role");
+  roleDiv.textContent = role.toUpperCase();
+
+  const contentDiv = document.createElement("div");
+  contentDiv.classList.add("chat-message-content");
+  contentDiv.textContent = content;
+
+  msg.appendChild(roleDiv);
+  msg.appendChild(contentDiv);
+
+  messagesDiv.appendChild(msg);
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
+async function handleChatSubmit() {
+  const input = document.getElementById("chat-input");
+  const sendBtn = document.getElementById("send-chat-btn");
+  const loading = document.getElementById("chat-loading");
+
+  if (!input || !sendBtn || !loading) return;
+
+  const text = input.value.trim();
+  if (!text) return;
+
+  const apiKey = await getApiKey();
+  if (!apiKey) {
+    addChatMessage(
+      "system",
+      "Please set your OpenAI API key above before using chat."
+    );
+    return;
+  }
+
+  addChatMessage("user", text);
+  input.value = "";
+
+  sendBtn.disabled = true;
+  loading.classList.remove("hidden");
+
+  try {
+    const body = {
+      model: "gpt-5.1-mini",
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a helpful assistant embedded inside a browser extension for analyzing web traffic, privacy, and security.",
+        },
+        { role: "user", content: text },
+      ],
+      temperature: 0.6,
+    };
+
+    const response = await fetch(
+      "https://api.openai.com/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      }
+    );
+
+    if (!response.ok) {
+      const t = await response.text();
+      console.error("Chat OpenAI API error:", response.status, t);
+      addChatMessage(
+        "system",
+        "Error calling OpenAI for chat. Check the console for details."
+      );
       return;
     }
-    updateTrafficStats();
-    refreshTrafficSummary();
-    document
-      .getElementById("analysis-results")
-      .classList.add("hidden");
-    const msg = document.querySelector(".no-events-msg");
-    if (msg) msg.remove();
+
+    const data = await response.json();
+    const reply = data.choices?.[0]?.message?.content?.trim();
+    if (reply) {
+      addChatMessage("assistant", reply);
+    } else {
+      addChatMessage(
+        "system",
+        "OpenAI returned an empty response for chat."
+      );
+    }
+  } catch (err) {
+    console.error("Chat error:", err);
+    addChatMessage(
+      "system",
+      "Unexpected error during chat. Check the console for details."
+    );
+  } finally {
+    sendBtn.disabled = false;
+    loading.classList.add("hidden");
+  }
+}
+
+function setupChatInterface() {
+  const input = document.getElementById("chat-input");
+  const sendBtn = document.getElementById("send-chat-btn");
+  if (!input || !sendBtn) return;
+
+  sendBtn.addEventListener("click", handleChatSubmit);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleChatSubmit();
+    }
   });
 }
 
-// =======================
-// Popup init
-// =======================
+/* =========================
+   RAW TRAFFIC VIEWER
+   ========================= */
 
-chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-  const tab = tabs[0];
-  if (!tab || !tab.url) return;
-
-  currentTabId = tab.id;
-  const url = tab.url;
-  document.getElementById("url").textContent = url;
-
-  loadApiKey();
-  updateTrafficStats();
-  refreshTrafficSummary();
-
-  // Update stats every 2 seconds
-  setInterval(() => {
-    updateTrafficStats();
-    refreshTrafficSummary();
-  }, 2000);
-
-  // Attach clear button listener
-  document
-    .getElementById("clear-btn")
-    .addEventListener("click", clearTrafficData);
-
-  // Reload page button
-  document.getElementById("reload-btn").addEventListener("click", () => {
-    chrome.tabs.reload(currentTabId, () => {
-      setTimeout(() => {
-        updateTrafficStats();
-        refreshTrafficSummary();
-      }, 1000);
-    });
-  });
-
-  document
-    .getElementById("create-ai-prompt-btn")
-    .addEventListener("click", createAIPrompt);
-
-  // Test webRequest API
-  chrome.runtime.sendMessage({ type: "test_webrequest" }, (response) => {
-    if (response && response.status) {
-      console.log("webRequest test:", response.status);
-    }
-  });
-
-  // Chat interface
-  setupChatInterface();
-
-  // Traffic data viewer
-  setupTrafficDataViewer();
-});
-
-// =======================
-// Traffic data viewer
-// =======================
+function escapeHtml(str) {
+  if (!str && str !== 0) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
 
 function setupTrafficDataViewer() {
   const viewBtn = document.getElementById("view-data-btn");
@@ -356,75 +687,39 @@ function setupTrafficDataViewer() {
   const exportBtn = document.getElementById("export-data-btn");
   const autoScroll = document.getElementById("auto-scroll");
 
-  viewBtn.addEventListener("click", () => {
-    viewer.classList.remove("hidden");
-    updateTrafficDataView();
-    // Auto-update every second
-    const interval = setInterval(() => {
-      if (!viewer.classList.contains("hidden")) {
-        updateTrafficDataView();
-      } else {
-        clearInterval(interval);
-      }
-    }, 1000);
-  });
+  if (!viewBtn || !closeBtn || !viewer || !content || !exportBtn || !autoScroll) {
+    console.warn("[WebTrafficMonitor] Missing traffic data viewer elements.");
+    return;
+  }
 
-  closeBtn.addEventListener("click", () => {
-    viewer.classList.add("hidden");
-  });
+  function renderEvents(events) {
+    content.innerHTML = "";
 
-  exportBtn.addEventListener("click", () => {
-    chrome.runtime.sendMessage({ type: "get_traffic_data" }, (response) => {
-      if (response && response.success) {
-        const dataStr = JSON.stringify(response.data, null, 2);
-        const blob = new Blob([dataStr], { type: "application/json" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `traffic-data-${Date.now()}.json`;
-        a.click();
-        URL.revokeObjectURL(url);
-      }
-    });
-  });
+    if (!events || !events.length) {
+      content.textContent =
+        "No traffic events recorded yet. Browse some pages to capture data.";
+      return;
+    }
 
-  function updateTrafficDataView() {
-    chrome.runtime.sendMessage({ type: "get_traffic_data" }, (response) => {
-      if (response && response.success && response.data.events) {
-        const events = response.data.events;
-        content.innerHTML = "";
-
-        if (events.length === 0) {
-          content.innerHTML =
-            "<div style='padding: 20px; text-align: center; color: #aaa;'>No traffic data collected yet.</div>";
-          return;
-        }
-
-        events.forEach((event, index) => {
-          const eventDiv = document.createElement("div");
-          eventDiv.className = "traffic-event";
-          eventDiv.innerHTML = `
+    events.forEach((event, index) => {
+      const eventDiv = document.createElement("div");
+      eventDiv.className = "traffic-event";
+      eventDiv.innerHTML = `
             <div class="traffic-event-header">
               <span class="traffic-event-number">#${index + 1}</span>
-              <span class="traffic-event-kind">${
-                event.kind || "unknown"
-              }</span>
+              <span class="traffic-event-kind">${event.kind || "unknown"}</span>
               <span class="traffic-event-time">${new Date(
                 event.timestamp || event.time
               ).toLocaleTimeString()}</span>
             </div>
             <div class="traffic-event-details">
-              <div class="traffic-event-method">${
-                event.method || "N/A"
-              }</div>
+              <div class="traffic-event-method">${event.method || "N/A"}</div>
               <div class="traffic-event-url">${escapeHtml(
                 event.url || "N/A"
               )}</div>
               ${
                 event.statusCode
-                  ? `<div class="traffic-event-status">Status: ${event.statusCode} ${
-                      event.statusLine || ""
-                    }</div>`
+                  ? `<div class="traffic-event-status">Status: ${event.statusCode}</div>`
                   : ""
               }
               ${
@@ -433,179 +728,66 @@ function setupTrafficDataViewer() {
                   : ""
               }
               ${
-                event.fields
-                  ? `<div class="traffic-event-fields">Fields: ${JSON.stringify(
-                      event.fields,
-                      null,
-                      2
+                event.requestBody
+                  ? `<div class="traffic-event-fields">${escapeHtml(
+                      JSON.stringify(event.requestBody, null, 2)
                     )}</div>`
                   : ""
               }
             </div>
           `;
-          content.appendChild(eventDiv);
-        });
-
-        // Auto-scroll to bottom if enabled
-        if (autoScroll.checked) {
-          content.scrollTop = content.scrollHeight;
-        }
-      }
+      content.appendChild(eventDiv);
     });
-  }
-}
 
-// =======================
-// Chat with OpenAI
-// =======================
-
-async function sendChatMessage() {
-  const input = document.getElementById("chat-input");
-  const message = input.value.trim();
-
-  if (!message) return;
-
-  // Get API key
-  const result = await chrome.storage.local.get(["openai_api_key"]);
-  const apiKey = result.openai_api_key;
-
-  if (!apiKey) {
-    addChatMessage(
-      "system",
-      "Please set your OpenAI API key first in the settings above."
-    );
-    return;
+    if (autoScroll.checked) {
+      content.scrollTop = content.scrollHeight;
+    }
   }
 
-  // Add user message to chat
-  addChatMessage("user", message);
-  input.value = "";
-
-  // Show loading
-  const loading = document.getElementById("chat-loading");
-  loading.classList.remove("hidden");
-
-  // Get current traffic data for context
-  let trafficContext = "";
-  chrome.runtime.sendMessage(
-    { type: "get_traffic_data" },
-    async (response) => {
-      if (response && response.success && response.data.events.length > 0) {
-        const events = response.data.events.slice(-10); // Last 10 events for context
-        trafficContext = `\n\nCurrent web traffic context (last 10 events):\n${JSON.stringify(
-          events,
-          null,
-          2
-        )}`;
+  viewBtn.addEventListener("click", () => {
+    chrome.runtime.sendMessage({ type: "get_traffic_data" }, (response) => {
+      if (!response || !response.success || !response.data) {
+        content.textContent = "No traffic data available.";
+        viewer.classList.remove("hidden");
+        return;
       }
 
-      // Send to OpenAI
-      try {
-        const openaiResponse = await fetch(
-          "https://api.openai.com/v1/chat/completions",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${apiKey}`
-            },
-            body: JSON.stringify({
-              model: "gpt-4o-mini",
-              messages: [
-                {
-                  role: "system",
-                  content:
-                    "You are a helpful assistant that can analyze web traffic and answer questions. Be concise and helpful."
-                },
-                {
-                  role: "user",
-                  content: message + trafficContext
-                }
-              ],
-              temperature: 0.7,
-              max_tokens: 1000
-            })
-          }
-        );
-
-        loading.classList.add("hidden");
-
-        if (!openaiResponse.ok) {
-          const errorData = await openaiResponse.json().catch(() => ({}));
-          throw new Error(
-            `OpenAI API error: ${openaiResponse.status} - ${
-              errorData.error?.message || openaiResponse.statusText
-            }`
-          );
-        }
-
-        const result = await openaiResponse.json();
-        const aiMessage =
-          result.choices[0]?.message?.content || "No response from AI";
-        addChatMessage("assistant", aiMessage);
-      } catch (error) {
-        loading.classList.add("hidden");
-        let errorMsg = error.message;
-
-        if (errorMsg.includes("429")) {
-          errorMsg =
-            "API quota exceeded. Please check your OpenAI billing and usage limits. You may need to add credits to your account.";
-        } else if (errorMsg.includes("401")) {
-          errorMsg =
-            "Invalid API key. Please check your API key in the settings above.";
-        } else if (errorMsg.includes("403")) {
-          errorMsg =
-            "API access forbidden. Your API key may not have permission or your account may be restricted.";
-        }
-
-        addChatMessage("system", `Error: ${errorMsg}`);
-      }
-    }
-  );
-}
-
-function addChatMessage(role, content) {
-  const messagesContainer = document.getElementById("chat-messages");
-  const messageDiv = document.createElement("div");
-  messageDiv.className = `chat-message chat-message-${role}`;
-
-  const roleLabel =
-    role === "user" ? "You" : role === "assistant" ? "AI" : "System";
-  messageDiv.innerHTML = `
-    <div class="chat-message-role">${roleLabel}</div>
-    <div class="chat-message-content">${escapeHtml(content)}</div>
-  `;
-
-  messagesContainer.appendChild(messageDiv);
-  messagesContainer.scrollTop = messagesContainer.scrollHeight;
-}
-
-function setupChatInterface() {
-  const sendBtn = document.getElementById("send-chat-btn");
-  const input = document.getElementById("chat-input");
-
-  sendBtn.addEventListener("click", sendChatMessage);
-
-  // Send on Enter (but allow Shift+Enter for new line)
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      sendChatMessage();
-    }
+      const data = response.data;
+      renderEvents(data.events || []);
+      viewer.classList.remove("hidden");
+    });
   });
 
-  // Add welcome message
-  addChatMessage(
-    "system",
-    "Hello! I can help you analyze web traffic or answer questions. Type a message below."
-  );
+  closeBtn.addEventListener("click", () => {
+    viewer.classList.add("hidden");
+  });
+
+  exportBtn.addEventListener("click", () => {
+    chrome.runtime.sendMessage({ type: "get_traffic_data" }, (response) => {
+      if (!response || !response.success || !response.data) {
+        alert("No traffic data to export.");
+        return;
+      }
+
+      const dataStr = JSON.stringify(response.data, null, 2);
+      const blob = new Blob([dataStr], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "web-traffic-data.json";
+      a.click();
+
+      URL.revokeObjectURL(url);
+    });
+  });
 }
 
-// =======================
-// Prompt generator
-// =======================
+/* =========================
+   CREATE AI PROMPT PAGE
+   ========================= */
 
-async function createAIPrompt() {
+function createAIPrompt() {
   chrome.runtime.sendMessage(
     { type: "get_traffic_data" },
     async (response) => {
@@ -624,7 +806,10 @@ async function createAIPrompt() {
       const events = data.events;
 
       // Get current tab URL for context
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tabs = await chrome.tabs.query({
+        active: true,
+        currentWindow: true,
+      });
       const currentTab = tabs[0];
 
       // Create a comprehensive summary
@@ -634,7 +819,7 @@ async function createAIPrompt() {
         monitoringStartTime: new Date(data.startTime).toISOString(),
         eventTypes: {},
         domains: new Set(),
-        endpointsByType: {}
+        endpointsByType: {},
       };
 
       // Analyze events
@@ -667,24 +852,33 @@ async function createAIPrompt() {
       for (const type in summary.endpointsByType) {
         summary.endpointsByType[type] = Array.from(
           summary.endpointsByType[type]
-        ).slice(0, 10); // Limit to top 10
+        );
       }
+
+      // Compute monitoring duration
+      const firstTs =
+        events.length > 0
+          ? events[0].timestamp || data.startTime || Date.now()
+          : data.startTime || Date.now();
+      const lastTs =
+        events.length > 0
+          ? events[events.length - 1].timestamp || Date.now()
+          : Date.now();
+
+      const durationMs = Math.max(0, lastTs - firstTs);
+      const monitoringDuration = formatDuration(durationMs);
 
       // Format the prompt
       let prompt = `# Web Traffic Analysis Request
 
-## Context
-- **Website URL**: ${currentTab.url}
-- **Analysis Start Time**: ${new Date(
-        data.startTime
-      ).toLocaleString()}
-- **Total Events Captured**: ${events.length}
-- **Monitoring Duration**: ${Math.round(
-        (Date.now() - data.startTime) / 1000 / 60
-      )} minutes
+    ## Context
+    - **Website URL**: ${currentTab.url}
+    - **Analysis Start Time**: ${new Date(data.startTime).toLocaleString()}
+    - **Total Events Captured**: ${events.length}
+    - **Monitoring Duration**: ${monitoringDuration}
 
-## Traffic Overview
-`;
+  ## Traffic Overview
+  `;
 
       // Add event type breakdown
       prompt += `\n### Event Types Breakdown:\n`;
@@ -707,11 +901,12 @@ async function createAIPrompt() {
       for (const [type, endpoints] of Object.entries(
         summary.endpointsByType
       )) {
-        if (endpoints.length > 0) {
-          prompt += `\n**${type.toUpperCase()}**:\n`;
-          endpoints.forEach((endpoint) => {
-            prompt += `- ${endpoint}\n`;
-          });
+        prompt += `\n- **${type.toUpperCase()}**:\n`;
+        endpoints.slice(0, 10).forEach((endpoint) => {
+          prompt += `- ${endpoint}\n`;
+        });
+        if (endpoints.length > 10) {
+          prompt += `  - ... and ${endpoints.length - 10} more\n`;
         }
       }
 
@@ -731,26 +926,25 @@ async function createAIPrompt() {
           prompt += `- **URL**: ${event.url}\n`;
         }
         if (event.statusCode) {
-          prompt += `- **Response**: ${event.statusCode} ${
-            event.statusLine || ""
-          }\n`;
+          prompt += `- **Status code**: ${event.statusCode}\n`;
         }
-        if (event.type && event.type !== "other") {
-          prompt += `- **Content Type**: ${event.type}\n`;
+        if (event.type) {
+          prompt += `- **Type**: ${event.type}\n`;
         }
-        if (event.fields) {
-          prompt += `- **Form Data**: ${JSON.stringify(
-            event.fields,
-            null,
-            2
-          )}\n`;
+        if (event.requestBody) {
+          const bodyStr =
+            typeof event.requestBody === "string"
+              ? event.requestBody
+              : JSON.stringify(event.requestBody).slice(0, 500);
+          prompt += `- **Request body (truncated)**: ${bodyStr}\n`;
         }
       });
 
       // Add statistics
       prompt += `\n## Statistics:\n`;
       prompt += `- Requests per minute: ${(
-        events.length / ((Date.now() - data.startTime) / 1000 / 60)
+        events.length /
+        ((Date.now() - data.startTime) / 1000 / 60)
       ).toFixed(2)}\n`;
 
       // Add analysis request
@@ -766,22 +960,17 @@ Please analyze this web traffic data and provide insights on:
 
 Please structure your response with clear sections and actionable insights.`;
 
-      createPromptTab(prompt);
+      // Create a new tab with the prompt
+      createPromptTab(prompt, {
+        totalEvents: events.length,
+        uniqueDomains: summary.domains.length,
+        monitoringDuration
+      });
     }
   );
 }
 
-function createPromptTab(prompt) {
-  // Extract stats from the prompt text for display
-  const eventMatch = prompt.match(/Total Events Captured[^:]*: (\d+)/);
-  const domainMatch = prompt.match(/Top Domains Contacted \((\d+) total\)/);
-  const durationMatch = prompt.match(/Monitoring Duration[^:]*: (\d+) minutes/);
-  
-  const eventCount = eventMatch ? eventMatch[1] : '0';
-  const domainCount = domainMatch ? domainMatch[1] : '0';
-  const duration = durationMatch ? durationMatch[1] + 'm' : '0m';
-  
-  // Create the complete HTML with prompt
+function createPromptTab(prompt, stats) {
   const promptHtml = `
 <!DOCTYPE html>
 <html>
@@ -791,39 +980,29 @@ function createPromptTab(prompt) {
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      margin: 0;
+      line-height: 1.6;
+      max-width: 800px;
+      margin: 0 auto;
       padding: 20px;
       background: #1e1e1e;
       color: #f5f5f5;
-      line-height: 1.6;
     }
-    .container {
-      max-width: 800px;
-      margin: 0 auto;
-    }
-    header {
-      text-align: center;
-      margin-bottom: 30px;
-      padding-bottom: 20px;
-      border-bottom: 2px solid #4a9eff;
-    }
-    h1 {
+    h1, h2, h3 {
       color: #4a9eff;
-      margin: 0 0 10px 0;
     }
     .stats {
       display: flex;
-      justify-content: center;
-      gap: 20px;
+      gap: 15px;
       margin: 20px 0;
       flex-wrap: wrap;
     }
-    .stat-box {
-      background: #2a2a2a;
-      padding: 15px 25px;
-      border-radius: 8px;
+    .stat-card {
+      background: #333;
+      padding: 15px;
+      border-radius: 6px;
       text-align: center;
-      min-width: 120px;
+      flex: 1;
+      min-width: 0;
     }
     .stat-value {
       font-size: 24px;
@@ -832,16 +1011,16 @@ function createPromptTab(prompt) {
       margin: 5px 0;
     }
     .stat-label {
-      font-size: 12px;
-      color: #aaa;
+      font-size: 11px;
       text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #aaa;
     }
     .controls {
       display: flex;
       gap: 10px;
       margin: 20px 0;
       flex-wrap: wrap;
-      justify-content: center;
     }
     button {
       padding: 10px 20px;
@@ -862,127 +1041,148 @@ function createPromptTab(prompt) {
     button.secondary:hover {
       background: #444;
     }
-    .alert {
-      background: #27ae60;
-      color: white;
+    .success-message {
+      background: #2a4a2a;
+      border: 1px solid #2ecc71;
+      color: #2ecc71;
       padding: 10px;
-      border-radius: 6px;
-      margin: 10px 0;
-      text-align: center;
+      border-radius: 4px;
+      margin-bottom: 15px;
       display: none;
-    }
-    .prompt-container {
-      background: #2a2a2a;
-      border-radius: 8px;
-      padding: 20px;
-      margin: 20px 0;
-      border: 1px solid #444;
+      font-size: 13px;
     }
     .prompt-box {
       background: #1a1a1a;
       border: 1px solid #444;
       border-radius: 6px;
       padding: 15px;
+      margin: 15px 0;
       white-space: pre-wrap;
-      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+      font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
       font-size: 13px;
-      line-height: 1.5;
-      max-height: 500px;
+      line-height: 1.4;
+      max-height: 400px;
       overflow-y: auto;
-      color: #f5f5f5;
-      margin: 0;
     }
-    .instructions {
-      background: #2a2a2a;
-      border-radius: 8px;
-      padding: 20px;
-      margin: 20px 0;
-      border: 1px solid #444;
+    .container {
+      background: #252525;
+      border-radius: 6px;
+      padding: 15px 20px;
+      margin-top: 20px;
     }
-    .instructions h3 {
-      margin-top: 0;
-      color: #6bb6ff;
+    .url-list {
+      background: #1a1a1a;
+      border-radius: 4px;
+      padding: 10px;
+      margin: 10px 0;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .url-item {
+      padding: 5px 10px;
+      border-bottom: 1px solid #333;
+      font-family: monospace;
+      font-size: 12px;
+    }
+    .url-item:last-child {
+      border-bottom: none;
     }
   </style>
 </head>
 <body>
-  <div class="container">
-    <header>
-      <h1>🔍 Web Traffic Analysis Prompt</h1>
-      <p>Ready for AI analysis - Copy and paste into any AI assistant</p>
-    </header>
-    
-    <div class="stats">
-      <div class="stat-box">
-        <div class="stat-value">${eventCount}</div>
-        <div class="stat-label">Total Events</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-value">${domainCount}</div>
-        <div class="stat-label">Domains</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-value">${duration}</div>
-        <div class="stat-label">Duration</div>
-      </div>
+  <h1>🔍 Web Traffic Analysis Prompt</h1>
+  
+  <div class="stats">
+    <div class="stat-card">
+      <div class="stat-value" id="event-count">${stats && typeof stats.totalEvents !== 'undefined' ? stats.totalEvents : '0'}</div>
+      <div class="stat-label">Total Events</div>
     </div>
-    
-    <div class="controls">
-      <button id="copy-btn">📋 Copy Prompt</button>
-      <button id="open-chatgpt" class="secondary">ChatGPT</button>
-      <button id="open-claude" class="secondary">Claude</button>
-      <button id="open-gemini" class="secondary">Gemini</button>
+    <div class="stat-card">
+      <div class="stat-value" id="domain-count">${stats && typeof stats.uniqueDomains !== 'undefined' ? stats.uniqueDomains : '0'}</div>
+      <div class="stat-label">Unique Domains</div>
     </div>
-    
-    <div id="alert" class="alert">✅ Prompt copied to clipboard!</div>
-    
-    <div class="prompt-container">
-      <h3>AI Analysis Prompt:</h3>
-      <pre class="prompt-box" id="prompt-content">${escapeHtml(prompt)}</pre>
-    </div>
-    
-    <div class="instructions">
-      <h3>How to use:</h3>
-      <ol>
-        <li>Click "Copy Prompt" button above</li>
-        <li>Open your preferred AI assistant (ChatGPT, Claude, Gemini, etc.)</li>
-        <li>Paste the prompt and ask for analysis</li>
-        <li>The AI will analyze the web traffic and provide insights on privacy, security, and data collection</li>
-      </ol>
+    <div class="stat-card">
+      <div class="stat-value" id="duration">${stats && stats.monitoringDuration ? stats.monitoringDuration : '0s'}</div>
+      <div class="stat-label">Monitoring Time</div>
     </div>
   </div>
   
-  <script>
-    // Get the prompt content directly from the pre element
-    const promptElement = document.getElementById('prompt-content');
-    const promptContent = promptElement ? promptElement.textContent : '';
+  <div class="controls">
+    <button id="copy-btn">📋 Copy Prompt to Clipboard</button>
+    <button id="open-chatgpt" class="secondary">🤖 Open ChatGPT</button>
+    <button id="open-claude" class="secondary">🧠 Open Claude</button>
+    <button id="open-gemini" class="secondary">✨ Open Gemini</button>
+  </div>
+  
+  <div id="success-message" class="success-message">
+    ✅ Prompt copied to clipboard!
+  </div>
+  
+  <div class="container">
+    <h2>Analysis Prompt</h2>
+    <p>Copy this prompt and paste it into your preferred AI assistant for analysis:</p>
     
-    // Copy button functionality
+    <div class="prompt-box" id="prompt-content"></div>
+  </div>
+  
+  <div class="container">
+    <h2>Quick Stats</h2>
+    <div id="event-types"></div>
+    
+    <h3>Top Domains Contacted:</h3>
+    <div class="url-list" id="domain-list"></div>
+  </div>
+  
+  <script>
+    const promptContent = ${JSON.stringify(prompt)};
+    const statsData = ${JSON.stringify(stats || {})};
+    document.getElementById('prompt-content').textContent = promptContent;
+    
+    // Apply stats from the extension (no regex parsing)
+    (function applyStats() {
+      const s = statsData || {};
+      const eventEl = document.getElementById('event-count');
+      const domainEl = document.getElementById('domain-count');
+      const durationEl = document.getElementById('duration');
+      if (eventEl && typeof s.totalEvents !== 'undefined') eventEl.textContent = s.totalEvents;
+      if (domainEl && typeof s.uniqueDomains !== 'undefined') domainEl.textContent = s.uniqueDomains;
+      if (durationEl && s.monitoringDuration) durationEl.textContent = s.monitoringDuration;
+    })();
+    
+    // Extract event types section (from the prompt text)
+    const eventTypesSection = promptContent.match(/### Event Types Breakdown:[\\s\\S]*?(?=\\n\\n###|$)/);
+    if (eventTypesSection) {
+      const eventTypesDiv = document.getElementById('event-types');
+      eventTypesDiv.innerHTML = eventTypesSection[0]
+        .replace('### Event Types Breakdown:', '<strong>Event Types Breakdown:</strong><br>')
+        .replace(/\\n- \\*\\*(.+?)\\*\\*: (.+)/g, '<br><strong>$1</strong>: $2');
+    }
+    
+    // Extract domains section
+    const domainSection = promptContent.match(/### Top Domains Contacted[\\s\\S]*?(?=\\n\\n###|$)/);
+    if (domainSection) {
+      const lines = domainSection[0].split('\\n');
+      const domainList = document.getElementById('domain-list');
+      lines.forEach((line) => {
+        if (line.trim().startsWith('- ') && !line.includes('... and')) {
+          const domain = line.replace('- ', '').trim();
+          if (domain) {
+            const div = document.createElement('div');
+            div.className = 'url-item';
+            div.textContent = domain;
+            domainList.appendChild(div);
+          }
+        }
+      });
+    }
+    
+    // Copy button
     document.getElementById('copy-btn').addEventListener('click', () => {
-      if (!promptContent) {
-        alert('No prompt content available');
-        return;
-      }
-      
       navigator.clipboard.writeText(promptContent).then(() => {
-        const alert = document.getElementById('alert');
-        alert.style.display = 'block';
+        const success = document.getElementById('success-message');
+        success.style.display = 'block';
         setTimeout(() => {
-          alert.style.display = 'none';
-        }, 3000);
-      }).catch(err => {
-        // Fallback for older browsers
-        const textArea = document.createElement('textarea');
-        textArea.value = promptContent;
-        document.body.appendChild(textArea);
-        textArea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textArea);
-        
-        const alert = document.getElementById('alert');
-        alert.style.display = 'block';
-        setTimeout(() => {
-          alert.style.display = 'none';
+          success.style.display = 'none';
         }, 3000);
       });
     });
@@ -991,30 +1191,94 @@ function createPromptTab(prompt) {
     document.getElementById('open-chatgpt').addEventListener('click', () => {
       window.open('https://chat.openai.com/', '_blank');
     });
-    
     document.getElementById('open-claude').addEventListener('click', () => {
       window.open('https://claude.ai/', '_blank');
     });
-    
     document.getElementById('open-gemini').addEventListener('click', () => {
       window.open('https://gemini.google.com/', '_blank');
     });
   </script>
 </body>
 </html>`;
-  
-  // Create blob and open in new tab
-  const blob = new Blob([promptHtml], { type: 'text/html' });
-  const url = URL.createObjectURL(blob);
-  
-  chrome.tabs.create({ url: url });
+
+  chrome.tabs.create({
+    url: "data:text/html;charset=utf-8," + encodeURIComponent(promptHtml),
+  });
 }
+
 
 function showError(message) {
   const errorDiv = document.getElementById("error");
+  if (!errorDiv) return;
   errorDiv.textContent = message;
   errorDiv.classList.remove("hidden");
   setTimeout(() => {
     errorDiv.classList.add("hidden");
   }, 5000);
 }
+
+document.addEventListener("DOMContentLoaded", () => {
+  // Remember current tab id
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (tabs && tabs.length > 0) {
+      currentTabId = tabs[0].id;
+    }
+  });
+
+  // Load traffic stats and summary
+  updateTrafficStats();          // normal (shows spinner once)
+  refreshTrafficSummary();
+
+  // Keep refreshing while the popup is open (quietly)
+  const REFRESH_INTERVAL_MS = 1000;
+  setInterval(() => {
+    updateTrafficStats(true);   // quiet: no spinner flicker
+    refreshTrafficSummary();    // smooth summary update
+  }, REFRESH_INTERVAL_MS);
+
+  // Load API key
+  loadApiKey();
+
+  // Save API key button
+  const saveBtn = document.getElementById("save-api-key");
+  if (saveBtn) {
+    saveBtn.addEventListener("click", saveApiKey);
+  }
+
+  // Analyze button
+  const analyzeBtn = document.getElementById("analyze-btn");
+  if (analyzeBtn) {
+    analyzeBtn.addEventListener("click", analyzeTrafficWithAI);
+  }
+
+  // Clear button listener
+  const clearBtn = document.getElementById("clear-btn");
+  if (clearBtn) {
+    clearBtn.addEventListener("click", clearTrafficData);
+  }
+
+  // Reload page button
+  const reloadBtn = document.getElementById("reload-btn");
+  if (reloadBtn) {
+    reloadBtn.addEventListener("click", () => {
+      chrome.tabs.reload(currentTabId, () => {
+        setTimeout(() => {
+          updateTrafficStats();
+          refreshTrafficSummary();
+        }, 1000);
+      });
+    });
+  }
+
+  // Create AI prompt button
+  const createPromptBtn = document.getElementById("create-ai-prompt-btn");
+  if (createPromptBtn) {
+    createPromptBtn.addEventListener("click", createAIPrompt);
+  }
+
+  // Chat interface
+  setupChatInterface();
+
+  // Traffic data viewer
+  setupTrafficDataViewer();
+});
